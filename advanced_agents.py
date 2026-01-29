@@ -226,6 +226,15 @@ class GNNRLAgent:
             
             self.optimizer = optim.Adam(list(self.q_head.parameters()) + [self.gcn_weight], lr=self.alpha)
             
+    def update_graph(self, graph, nodes):
+        """Updates the internal graph structure when topology changes"""
+        self.graph = graph
+        self.nodes = nodes
+        self.node_to_idx = {node: i for i, node in enumerate(nodes)}
+        self.idx_to_node = {i: node for i, node in enumerate(nodes)}
+        self.num_nodes = len(nodes)
+        self._build_adj_matrix()
+            
     def _build_adj_matrix(self):
         if not TORCH_AVAILABLE: return
         adj = torch.eye(self.num_nodes) # Self loops

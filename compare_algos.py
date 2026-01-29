@@ -6,14 +6,14 @@ import logging
 from utils import setup_logger
 from network_sim import NetworkSimulation
 from trust_model import TrustModel
-from routing import ShortestPathRouting, IntelligentRouting, RLRouting
-from rl_agent import QLearningAgent
+from routing import ShortestPathRouting, IntelligentRouting, RLRouting, TrustAwareRLRouting
+from rl_agent import QLearningAgent, TrustQLearningAgent
 
 # Disable inner logs for cleaner output
 logging.getLogger("NetworkSim").setLevel(logging.WARNING)
 logging.getLogger("Main").setLevel(logging.WARNING)
 
-def run_scenario(algo_name, routing_class, agent=None, congestion=True, packets=100, training=False):
+def run_scenario(algo_name, routing_class, agent=None, congestion=True, packets=100, training=False, trust_model=None):
     """
     Runs a single scenario and returns stats.
     """
@@ -52,10 +52,15 @@ def run_scenario(algo_name, routing_class, agent=None, congestion=True, packets=
         env.process(net_sim.update_congestion())
 
     # Setup Routing
-    trust_model = TrustModel() if algo_name != "Standard" else None
+    if not trust_model and algo_name != "Standard" and algo_name != "Q-Learning":
+        trust_model = TrustModel()
     
     if algo_name == "Q-Learning":
         routing_algo = routing_class(net_sim.graph, agent)
+    elif algo_name == "Trust-Aware Q-Learning":
+        # Ensure we pass the trust model to the routing algo locally if needed,
+        # but TrustAwareRLRouting signature is (graph, agent, trust_model)
+        routing_algo = routing_class(net_sim.graph, agent, trust_model)
     elif algo_name == "Intelligent":
         routing_algo = routing_class(net_sim.graph, trust_model)
     else:
@@ -80,13 +85,25 @@ def run_scenario(algo_name, routing_class, agent=None, congestion=True, packets=
                 # Custom loop for training
                 path = []
                 curr = src
+                visited = set([src])
                 while curr != dst and len(path) < 20:
                     path.append(curr)
                     nbrs = list(net_sim.graph.neighbors(curr))
                     if not nbrs: break
-                    nxt = routing_algo.agent.choose_action(curr, nbrs)
+                    
+                    # NEW: Support Trust-Aware choice in training loop
+                    if isinstance(routing_algo.agent, TrustQLearningAgent) and trust_model:
+                        trust_scores = {n: trust_model.get_trust(n) for n in nbrs}
+                        nxt = routing_algo.agent.choose_action(curr, nbrs, trust_scores=trust_scores, avoid_nodes=visited)
+                    else:
+                        nxt = routing_algo.agent.choose_action(curr, nbrs, avoid_nodes=visited) # Add visited check to standard too for fairness?
+                        # Actually standard Q-Learning in this repo didn't have avoid_nodes until now? 
+                        # RL agent code has it in signature now? Yes.
+                    
                     if nxt is None: break
                     curr = nxt
+                    visited.add(curr)
+                    
                 if curr == dst: path.append(dst)
 
                 # Eval path
@@ -116,8 +133,8 @@ def run_scenario(algo_name, routing_class, agent=None, congestion=True, packets=
             
             yield env.timeout(0.1)
 
-    env.process(traffic_gen())
-    env.run()
+    proc = env.process(traffic_gen())
+    env.run(until=proc)
     
     # Calc Metrics
     pdr = (stats['success'] / stats['total']) * 100
@@ -131,7 +148,8 @@ def main():
     results = {
         'Standard (Dijkstra)': {},
         'Intelligent (Trust)': {},
-        'Q-Learning (AI)': {}
+        'Q-Learning (AI)': {},
+        'Trust-Aware Q (New)': {}
     }
 
     # 1. Standard
@@ -159,6 +177,20 @@ def main():
     agent.epsilon = 0.05
     pdr, lat = run_scenario("Q-Learning", RLRouting, agent=agent, packets=100, training=False)
     results['Q-Learning (AI)'] = {'PDR': pdr, 'Latency': lat}
+
+    # 4. Trust-Aware RL
+    print("Simulating Trust-Aware Q-Routing...")
+    trust_agent = TrustQLearningAgent(dummy_net.nodes, epsilon=0.5, trust_impact=3.0) # Higher impact
+    ta_trust_model = TrustModel() # One trust model shared/updated during training
+    
+    # Train
+    print("  - Training Trust-RL Agent...")
+    run_scenario("Trust-Aware Q-Learning", TrustAwareRLRouting, agent=trust_agent, trust_model=ta_trust_model, packets=500, training=True)
+    
+    # Test
+    trust_agent.epsilon = 0.05
+    pdr, lat = run_scenario("Trust-Aware Q-Learning", TrustAwareRLRouting, agent=trust_agent, trust_model=ta_trust_model, packets=100, training=False)
+    results['Trust-Aware Q (New)'] = {'PDR': pdr, 'Latency': lat}
 
     # Plotting
     labels = list(results.keys())

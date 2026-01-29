@@ -50,6 +50,29 @@ class NetworkSimulation:
                 
                 self.graph[u][v]['weight'] = new_weight
 
+    def add_node(self):
+        """Adds a new node to the graph with a unique ID"""
+        if not self.nodes:
+            new_id = 0
+        else:
+            new_id = max(self.nodes) + 1
+        
+        self.graph.add_node(new_id, reliability=1.0)
+        self.nodes.append(new_id)
+        logger.info(f"Added new node: {new_id}")
+        return new_id
+
+    def add_edge(self, u, v, latency=10, capacity=50):
+        """Adds a directed edge between two nodes"""
+        if u not in self.nodes or v not in self.nodes:
+            return False
+        
+        self.graph.add_edge(u, v)
+        self.graph.edges[u, v]['weight'] = latency
+        self.graph.edges[u, v]['capacity'] = capacity
+        logger.info(f"Added edge {u}->{v} (Lat: {latency}, Cap: {capacity})")
+        return True
+
     def simulate_packet(self, path, trust_model, priority=0):
         """
         Simulates a packet traversing a path.

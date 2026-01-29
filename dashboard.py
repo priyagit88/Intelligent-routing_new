@@ -5,8 +5,8 @@ import random
 import matplotlib.pyplot as plt
 from network_sim import NetworkSimulation
 from trust_model import TrustModel
-from routing import IntelligentRouting, ShortestPathRouting, RLRouting, RIPRouting
-from rl_agent import QLearningAgent
+from routing import IntelligentRouting, ShortestPathRouting, RLRouting, RIPRouting, TrustAwareRLRouting
+from rl_agent import QLearningAgent, TrustQLearningAgent
 from visualization import visualize_network
 import pandas as pd
 
@@ -28,6 +28,7 @@ if 'env' not in st.session_state:
     nodes = list(st.session_state.net_sim.graph.nodes)
     st.session_state.rl_agent = QLearningAgent(nodes)
     st.session_state.dqn_agent = DQNAgent(nodes)
+    st.session_state.trust_rl_agent = TrustQLearningAgent(nodes, trust_impact=2.0)
     st.session_state.gnn_agent = GNNRLAgent(st.session_state.net_sim.graph, nodes)
     
     # Default Routing
@@ -43,7 +44,7 @@ st.sidebar.header("Simulation Controls")
 # Algorithm Selection
 algo_option = st.sidebar.selectbox(
     "Routing Protocol", 
-    ["Standard OSPF (Latency)", "RIP (Hop Count)", "Intelligent (Trust)", "Q-Learning (AI)", "DQN (Deep RL)", "GNN-RL (Graph AI)"]
+    ["Standard OSPF (Latency)", "RIP (Hop Count)", "Intelligent (Trust)", "Q-Learning (AI)", "Trust-Aware Q-Routing (New)", "DQN (Deep RL)", "GNN-RL (Graph AI)"]
 )
 
 # Handle Algorithm Change
@@ -57,6 +58,8 @@ if algo_option != st.session_state.routing_algo_name:
         st.session_state.routing = IntelligentRouting(st.session_state.net_sim.graph, st.session_state.trust_model)
     elif algo_option == "Q-Learning (AI)":
         st.session_state.routing = RLRouting(st.session_state.net_sim.graph, st.session_state.rl_agent)
+    elif algo_option == "Trust-Aware Q-Routing (New)":
+        st.session_state.routing = TrustAwareRLRouting(st.session_state.net_sim.graph, st.session_state.trust_rl_agent, st.session_state.trust_model)
     elif algo_option == "DQN (Deep RL)":
         st.session_state.routing = RLRouting(st.session_state.net_sim.graph, st.session_state.dqn_agent)
     elif algo_option == "GNN-RL (Graph AI)":
@@ -75,6 +78,65 @@ if st.sidebar.button("Update Node"):
     st.session_state.net_sim.graph.nodes[selected_node]['reliability'] = reliability
     st.success(f"Node {selected_node} reliability set to {reliability}")
 
+# Topology Management
+with st.sidebar.expander("Topology Management"):
+    # Add Node
+    if st.button("➕ Add New Node"):
+        new_id = st.session_state.net_sim.add_node()
+        st.success(f"Node {new_id} added!")
+        
+        # Update Agents
+        # Update persistent agents dict
+        if "Q-Learning" in st.session_state.agents:
+            st.session_state.agents["Q-Learning"].add_node(new_id)
+        if "Trust-Aware Q-Routing" in st.session_state.agents:
+            st.session_state.agents["Trust-Aware Q-Routing"].add_node(new_id)
+
+        # Update active standalone agents if they exist
+        if 'rl_agent' in st.session_state:
+            st.session_state.rl_agent.add_node(new_id)
+        if 'trust_rl_agent' in st.session_state:
+            st.session_state.trust_rl_agent.add_node(new_id)
+        
+        # GNN Agent needs graph rebuild
+        if "GNN-RL (Graph AI)" in st.session_state.agents:
+            st.session_state.agents["GNN-RL (Graph AI)"].update_graph(
+                st.session_state.net_sim.graph, 
+                list(st.session_state.net_sim.graph.nodes)
+            )
+            
+        # DQN Agent needs Reset
+        st.warning("DQN Agent RESET due to topology change.")
+        st.session_state.agents["DQN (Deep RL)"] = DQNAgent(list(st.session_state.net_sim.graph.nodes))
+        st.rerun()
+
+    st.write("---")
+    
+    # Add Connection
+    st.write("**Add Connection**")
+    node_options = list(st.session_state.net_sim.graph.nodes)
+    u_node = st.selectbox("Source", node_options, key="src_node")
+    v_node = st.selectbox("Destination", node_options, key="dst_node")
+    
+    new_latency = st.number_input("Latency (ms)", 1, 100, 10)
+    new_capacity = st.number_input("Capacity (Mbps)", 10, 1000, 100)
+    
+    if st.button("🔗 Connect"):
+        if u_node == v_node:
+            st.error("Source and Destination cannot be the same.")
+        elif st.session_state.net_sim.graph.has_edge(u_node, v_node):
+            st.error("Edge already exists.")
+        else:
+            st.session_state.net_sim.add_edge(u_node, v_node, new_latency, new_capacity)
+            st.success(f"Connected {u_node} -> {v_node}")
+            
+            # GNN needs update for new edges too (Adjacency Matrix)
+            if "GNN-RL (Graph AI)" in st.session_state.agents:
+                 st.session_state.agents["GNN-RL (Graph AI)"].update_graph(
+                    st.session_state.net_sim.graph, 
+                    list(st.session_state.net_sim.graph.nodes)
+                )
+
 # Helper to instantiate algo (cached or new)
 def get_routing_algo(name, graph, trust_model, existing_agents=None):
     if name == "Shortest Path":
@@ -85,6 +147,10 @@ def get_routing_algo(name, graph, trust_model, existing_agents=None):
         if existing_agents and "Q-Learning" in existing_agents:
             return RLRouting(graph, existing_agents["Q-Learning"])
         return RLRouting(graph, QLearningAgent(list(graph.nodes)))
+    elif name == "Trust-Aware Q-Routing":
+        if existing_agents and "Trust-Aware Q-Routing" in existing_agents:
+             return TrustAwareRLRouting(graph, existing_agents["Trust-Aware Q-Routing"], trust_model)
+        return TrustAwareRLRouting(graph, TrustQLearningAgent(list(graph.nodes)), trust_model)
     elif name == "DQN (Deep RL)":
         if existing_agents and "DQN (Deep RL)" in existing_agents:
              return RLRouting(graph, existing_agents["DQN (Deep RL)"])
@@ -100,6 +166,7 @@ def get_routing_algo(name, graph, trust_model, existing_agents=None):
 if 'agents' not in st.session_state:
     st.session_state.agents = {
         "Q-Learning": QLearningAgent(list(st.session_state.net_sim.graph.nodes)),
+        "Trust-Aware Q-Routing": TrustQLearningAgent(list(st.session_state.net_sim.graph.nodes)),
         "DQN (Deep RL)": DQNAgent(list(st.session_state.net_sim.graph.nodes)),
         "GNN-RL (Graph AI)": GNNRLAgent(st.session_state.net_sim.graph, list(st.session_state.net_sim.graph.nodes))
     }
@@ -322,8 +389,8 @@ with tab2:
     st.markdown("Compare different algorithms on the **exact same traffic** to measure true performance.")
     
     comp_algos = st.multiselect("Select Algorithms to Compare", 
-                                ["Shortest Path", "Intelligent Routing", "Q-Learning", "DQN (Deep RL)", "GNN-RL (Graph AI)"],
-                                default=["Shortest Path", "DQN (Deep RL)"])
+                                ["Shortest Path", "Intelligent Routing", "Q-Learning", "Trust-Aware Q-Routing", "DQN (Deep RL)", "GNN-RL (Graph AI)"],
+                                default=["Shortest Path", "Trust-Aware Q-Routing"])
     
     comp_steps = st.number_input("Comparison Packets", min_value=10, value=100)
     

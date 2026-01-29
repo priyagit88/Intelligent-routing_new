@@ -109,3 +109,41 @@ class RIPRouting(RoutingAlgorithm):
             return nx.shortest_path(self.graph, source=source, target=target, weight=None)
         except nx.NetworkXNoPath:
             return None
+
+class TrustAwareRLRouting(RLRouting):
+    def __init__(self, graph, agent, trust_model):
+        super().__init__(graph, agent)
+        self.trust_model = trust_model
+
+    def find_path(self, source, target):
+        path = [source]
+        current = source
+        visited = set([source])
+        max_hops = 20
+        
+        while current != target and len(path) < max_hops:
+            neighbors = list(self.graph.neighbors(current))
+            if not neighbors:
+                break
+                
+            # Get Trust Scores for neighbors
+            # agent.choose_action needs a dict of {neighbor: trust}
+            trust_scores = {n: self.trust_model.get_trust(n) for n in neighbors}
+            
+            # Pass trust_scores to the TrustQLearningAgent
+            if "trust_scores" in self.agent.choose_action.__code__.co_varnames:
+                 next_hop = self.agent.choose_action(current, neighbors, target, avoid_nodes=visited, trust_scores=trust_scores)
+            else:
+                 # Fallback if agent doesn't support trust (shouldn't happen if wired correctly)
+                 next_hop = self.agent.choose_action(current, neighbors, target, avoid_nodes=visited)
+            
+            if next_hop is None:
+                break
+            
+            path.append(next_hop)
+            visited.add(next_hop)
+            current = next_hop
+            
+        if current == target:
+            return path
+        return None

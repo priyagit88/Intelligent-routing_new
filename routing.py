@@ -31,8 +31,8 @@ class IntelligentRouting(RoutingAlgorithm):
         # Invert trust so lower trust = higher cost
         # cost = base_weight * (1 + (1 - trust))
         # If trust is 1.0, cost = base_weight
-        # If trust is 0.0, cost = base_weight * 2 (or more extreme penalty)
-        trust_penalty = (1 - trust_score) * 10 # Multiplier for impact
+        # If trust is 0.0, cost = base_weight * 51 (extreme penalty)
+        trust_penalty = (1 - trust_score) * 50 # Multiplier for impact (Increased from 10 to 50)
         
         return base_cost * (1 + trust_penalty)
 

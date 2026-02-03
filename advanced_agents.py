@@ -11,9 +11,9 @@ try:
     import torch.optim as optim
     import torch.nn.functional as F
     TORCH_AVAILABLE = True
-except ImportError:
+except (ImportError, OSError) as e:
     TORCH_AVAILABLE = False
-    logger.warning("PyTorch not found. Advanced agents (DQN, GNN) will act randomly or fail.")
+    logger.warning(f"PyTorch or dependencies not found. Advanced agents (DQN, GNN) will act randomly or fail: {e}")
 
 class DQNAgent:
     def __init__(self, nodes, alpha=0.001, gamma=0.95, epsilon=1.0, hidden_dim=128, memory_size=2000, batch_size=32):
@@ -28,7 +28,7 @@ class DQNAgent:
         self.batch_size = batch_size
         self.memory = deque(maxlen=memory_size)
         
-        if TORCH_AVAILABLE:
+        if TORCH_AVAILABLE and self.num_nodes > 0:
             # Input: One-hot current + One-hot target (Size: 2 * num_nodes)
             # Output: Q-value for each neighbor (Size: num_nodes, masked later)
             self.model = nn.Sequential(
@@ -52,6 +52,11 @@ class DQNAgent:
             
             self.optimizer = optim.Adam(self.model.parameters(), lr=self.alpha)
             self.criterion = nn.MSELoss()
+        else:
+            self.model = None
+            self.target_model = None
+            self.optimizer = None
+            self.criterion = None
         
     def _get_state_vector(self, current_node, target_node):
         state = torch.zeros(2 * self.num_nodes)
@@ -78,6 +83,11 @@ class DQNAgent:
             return random.choice(valid)
         
         # Exploit
+        if self.model is None:
+             valid = [n for n in neighbors if not avoid_nodes or n not in avoid_nodes]
+             if not valid: return None
+             return random.choice(valid)
+
         with torch.no_grad():
             state_vec = self._get_state_vector(current_node, target_node)
             q_values = self.model(state_vec) # [num_nodes]
@@ -199,7 +209,7 @@ class GNNRLAgent:
         self.adj_matrix = None 
         self._build_adj_matrix()
         
-        if TORCH_AVAILABLE:
+        if TORCH_AVAILABLE and self.num_nodes > 0:
             # GCN Layer: H_new = ReLU(A * H * W)
             # Input Features per node: [is_target, trust_score, degree_centrality]
             self.input_dim = 3 
@@ -225,6 +235,14 @@ class GNNRLAgent:
             self.target_q_head.load_state_dict(self.q_head.state_dict())
             
             self.optimizer = optim.Adam(list(self.q_head.parameters()) + [self.gcn_weight], lr=self.alpha)
+        else:
+            self.input_dim = 3
+            self.embedding_dim = embedding_dim
+            self.gcn_weight = None
+            self.q_head = None
+            self.target_gcn_weight = None
+            self.target_q_head = None
+            self.optimizer = None
             
     def update_graph(self, graph, nodes):
         """Updates the internal graph structure when topology changes"""
@@ -234,6 +252,29 @@ class GNNRLAgent:
         self.idx_to_node = {i: node for i, node in enumerate(nodes)}
         self.num_nodes = len(nodes)
         self._build_adj_matrix()
+        
+        # If model wasn't initialized (e.g. started at 0 nodes), initialize it now
+        if TORCH_AVAILABLE and self.num_nodes > 0 and self.gcn_weight is None:
+            # GCN weights
+            self.gcn_weight = nn.Parameter(torch.randn(self.input_dim, self.embedding_dim))
+            
+            # Q-Net Head
+            self.q_head = nn.Sequential(
+                nn.Linear(2 * self.embedding_dim, 64),
+                nn.ReLU(),
+                nn.Linear(64, 1)
+            )
+            
+            # Target Network parameters
+            self.target_gcn_weight = nn.Parameter(self.gcn_weight.clone().detach())
+            self.target_q_head = nn.Sequential(
+                nn.Linear(2 * self.embedding_dim, 64),
+                nn.ReLU(),
+                nn.Linear(64, 1)
+            )
+            self.target_q_head.load_state_dict(self.q_head.state_dict())
+            
+            self.optimizer = optim.Adam(list(self.q_head.parameters()) + [self.gcn_weight], lr=self.alpha)
             
     def _build_adj_matrix(self):
         if not TORCH_AVAILABLE: return

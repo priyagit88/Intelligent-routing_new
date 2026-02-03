@@ -51,11 +51,14 @@ class QLearningAgent:
             q_values = [self.get_q_value(current_node, n) for n in valid_neighbors]
             max_q = max(q_values)
             
-            # Tie-breaking
+            # Tie-breaking: Favor more trusted neighbors if Q-values are equal
             best_actions = [n for n, q in zip(valid_neighbors, q_values) if q == max_q]
-            return random.choice(best_actions)
+            if len(best_actions) > 1 and trust_scores:
+                # Use trust scores provided (or default 0.5)
+                best_actions.sort(key=lambda n: trust_scores.get(n, 0.5), reverse=True)
+            return best_actions[0]
 
-    def learn(self, state, action, reward, next_state, next_neighbors, target_node=None):
+    def learn(self, state, action, reward, next_state, next_neighbors, target_node=None, done=False):
         """
         Q-Learning Update Rule:
         Q(s,a) <- Q(s,a) + alpha * [reward + gamma * max(Q(s', a')) - Q(s,a)]
@@ -127,6 +130,5 @@ class TrustQLearningAgent(QLearningAgent):
             return random.choice(valid_neighbors)
         else:
             # Exploit: Same as Q-Learning (max Q)
-            # Optionally, we could blend Q + Trust here too, but standard Q-routing uses Q for exploitation.
-            # The Trust bias in exploration helps finding GOOD paths faster.
-            return super().choose_action(current_node, neighbors, target_node, avoid_nodes)
+            # Pass trust_scores for tie-breaking
+            return super().choose_action(current_node, neighbors, target_node, avoid_nodes, trust_scores=trust_scores)

@@ -111,9 +111,29 @@ class RIPRouting(RoutingAlgorithm):
             return None
 
 class TrustAwareRLRouting(RLRouting):
-    def __init__(self, graph, agent, trust_model):
+    def __init__(self, graph, agent, trust_model, use_multi_metric=True):
         super().__init__(graph, agent)
         self.trust_model = trust_model
+        self.use_multi_metric = use_multi_metric
+
+    def calculate_multi_metric_score(self, node_id):
+        """
+        Calculate multi-metric routing score for a node.
+        Score = 0.4 × trust + 0.3 × norm_bw - 0.2 × norm_delay - 0.1 × pkt_loss
+        
+        Returns:
+            float: Routing score (higher is better)
+        """
+        trust = self.trust_model.get_trust(node_id)
+        metrics = self.trust_model.get_metrics(node_id)
+        
+        score = (
+            0.4 * trust +
+            0.3 * metrics["bandwidth"] -
+            0.2 * metrics["delay"] -
+            0.1 * metrics["packet_loss"]
+        )
+        return score
 
     def find_path(self, source, target):
         path = [source]
@@ -125,17 +145,37 @@ class TrustAwareRLRouting(RLRouting):
             neighbors = list(self.graph.neighbors(current))
             if not neighbors:
                 break
-                
-            # Get Trust Scores for neighbors
-            # agent.choose_action needs a dict of {neighbor: trust}
-            trust_scores = {n: self.trust_model.get_trust(n) for n in neighbors}
+            
+            # TRUST GATE: Filter out low-trust nodes (trust < 0.4)
+            trusted_neighbors = [
+                n for n in neighbors 
+                if self.trust_model.is_trusted(n) and n not in visited
+            ]
+            
+            # If no trusted neighbors, fall back to all unvisited neighbors
+            # (This handles edge cases where all neighbors are untrusted)
+            if not trusted_neighbors:
+                trusted_neighbors = [n for n in neighbors if n not in visited]
+            
+            if not trusted_neighbors:
+                break
+            
+            # Get Trust Scores for trusted neighbors
+            trust_scores = {n: self.trust_model.get_trust(n) for n in trusted_neighbors}
+            
+            # If using multi-metric scoring, enhance trust scores with metrics
+            if self.use_multi_metric:
+                # Calculate multi-metric scores for each neighbor
+                metric_scores = {n: self.calculate_multi_metric_score(n) for n in trusted_neighbors}
+                # Use metric scores as "enhanced trust scores" for agent
+                trust_scores = metric_scores
             
             # Pass trust_scores to the TrustQLearningAgent
             if "trust_scores" in self.agent.choose_action.__code__.co_varnames:
-                 next_hop = self.agent.choose_action(current, neighbors, target, avoid_nodes=visited, trust_scores=trust_scores)
+                 next_hop = self.agent.choose_action(current, trusted_neighbors, target, avoid_nodes=visited, trust_scores=trust_scores)
             else:
                  # Fallback if agent doesn't support trust (shouldn't happen if wired correctly)
-                 next_hop = self.agent.choose_action(current, neighbors, target, avoid_nodes=visited)
+                 next_hop = self.agent.choose_action(current, trusted_neighbors, target, avoid_nodes=visited)
             
             if next_hop is None:
                 break

@@ -38,12 +38,25 @@ def reset_network(num_nodes=15, connectivity=0.2, random_init=True):
         for _ in range(num_nodes):
             st.session_state.net_sim.add_node()
             
-    st.session_state.trust_model = TrustModel()
+    st.session_state.trust_model = TrustModel(
+        initial_trust=1.0,
+        decay_factor=0.3,  # Very aggressive decay
+        bonus_factor=0.02,
+        trust_threshold=0.4
+    )
     
     # Initialize Agents
     nodes = list(st.session_state.net_sim.graph.nodes)
-    st.session_state.rl_agent = QLearningAgent(nodes)
-    st.session_state.trust_rl_agent = TrustQLearningAgent(nodes, trust_impact=2.0)
+    st.session_state.rl_agent = QLearningAgent(nodes, alpha=0.6, gamma=0.8, epsilon=0.9)
+    st.session_state.trust_rl_agent = TrustQLearningAgent(
+        nodes, 
+        alpha=0.6, 
+        gamma=0.8, 
+        epsilon=0.9,
+        epsilon_min=0.1,
+        epsilon_decay=0.995,
+        trust_impact=3.0  # Stronger trust influence
+    )
     
     if ADVANCED_AGENTS_AVAILABLE:
         st.session_state.dqn_agent = DQNAgent(nodes)

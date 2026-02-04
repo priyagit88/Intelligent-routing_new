@@ -2,17 +2,21 @@ import random
 import numpy as np
 
 class QLearningAgent:
-    def __init__(self, nodes, alpha=0.1, gamma=0.9, epsilon=0.1):
+    def __init__(self, nodes, alpha=0.6, gamma=0.8, epsilon=0.9, epsilon_min=0.1, epsilon_decay=0.995):
         """
-        Q-Learning Agent for Routing.
+        Q-Learning Agent for Routing with optimized parameters.
         nodes: list of all node IDs
-        alpha: learning rate
-        gamma: discount factor
-        epsilon: exploration rate
+        alpha: learning rate (0.6 for faster learning)
+        gamma: discount factor (0.8)
+        epsilon: exploration rate (starts at 0.9)
+        epsilon_min: minimum exploration rate (0.1)
+        epsilon_decay: decay factor per episode (0.995)
         """
         self.alpha = alpha
         self.gamma = gamma
         self.epsilon = epsilon
+        self.epsilon_min = epsilon_min
+        self.epsilon_decay = epsilon_decay
         self.nodes = nodes
         
         # Q-Table: Q[current_node][next_hop] -> Value
@@ -32,9 +36,10 @@ class QLearningAgent:
         """State = current node, Action = next hop neighbor"""
         return self.q_table.get(state, {}).get(action, 0.0)
 
-    def choose_action(self, current_node, neighbors, target_node=None, avoid_nodes=None):
+    def choose_action(self, current_node, neighbors, target_node=None, avoid_nodes=None, trust_scores=None):
         """
         Epsilon-greedy selection of next hop.
+        trust_scores: Optional dict {node_id: trust_value} for tie-breaking
         """
         if not neighbors:
             return None
@@ -74,6 +79,10 @@ class QLearningAgent:
         new_q = current_q + self.alpha * (reward + self.gamma * max_next_q - current_q)
         self.q_table[state][action] = new_q
 
+    def decay_epsilon(self):
+        """Decay epsilon for epsilon-greedy exploration."""
+        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+    
     def add_node(self, node_id):
         """Dynamically adds a new node to the Q-table"""
         if node_id not in self.nodes:
@@ -81,11 +90,12 @@ class QLearningAgent:
             self.q_table[node_id] = {}
 
 class TrustQLearningAgent(QLearningAgent):
-    def __init__(self, nodes, alpha=0.1, gamma=0.9, epsilon=0.1, trust_impact=2.0):
+    def __init__(self, nodes, alpha=0.6, gamma=0.8, epsilon=0.9, epsilon_min=0.1, epsilon_decay=0.995, trust_impact=2.0):
         """
+        Trust-aware Q-Learning with optimized parameters.
         trust_impact: How strongly trust affects exploration probability.
         """
-        super().__init__(nodes, alpha, gamma, epsilon)
+        super().__init__(nodes, alpha, gamma, epsilon, epsilon_min, epsilon_decay)
         self.trust_impact = trust_impact
 
     def choose_action(self, current_node, neighbors, target_node=None, avoid_nodes=None, trust_scores=None):

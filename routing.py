@@ -160,6 +160,25 @@ class TrustAwareRLRouting(RLRouting):
         return 1.0 / (1.0 + float(hops))
 
     def find_path(self, source, target):
+        # Hybrid mode: when we have a trust model, we can compute a global trust-aware path
+        # (like a trust-weighted OSPF). This avoids the common failure mode of hop-by-hop RL
+        # wandering into dead ends in directed/random graphs.
+        def trust_aware_edge_cost(u, v, data):
+            base = data.get("weight", 1)
+            trust = self.trust_model.get_trust(v)
+            is_blackhole = bool(self.trust_model.stats.get(v, {}).get("is_blackhole", False))
+            if is_blackhole or not self.trust_model.is_trusted(v):
+                # Make untrusted/blackhole nodes effectively unreachable unless there is no alternative.
+                return base * 10_000
+            # Smooth penalty: lower trust => higher cost
+            return base * (1.0 + (1.0 - trust) * 25.0)
+
+        try:
+            return nx.shortest_path(self.graph, source=source, target=target, weight=trust_aware_edge_cost)
+        except nx.NetworkXNoPath:
+            # Fall back to hop-by-hop policy below
+            pass
+
         path = [source]
         current = source
         visited = set([source])

@@ -352,8 +352,11 @@ with st.sidebar.expander("🛡️ Adversary Settings"):
 
 # Helper to instantiate algo (cached or new)
 def get_routing_algo(name, graph, trust_model, existing_agents=None):
-    if name == "Shortest Path":
+    # Backward compatible names + explicit protocol labels
+    if name in ["Shortest Path", "OSPF (Link State)"]:
         return ShortestPathRouting(graph)
+    elif name == "RIP (Hop Count)":
+        return RIPRouting(graph)
     elif name == "Intelligent Routing":
         return IntelligentRouting(graph, trust_model)
     elif name == "Q-Learning":
@@ -833,8 +836,8 @@ with tab2:
     st.markdown("Compare different algorithms on the **exact same traffic** to measure true performance.")
     
     comp_algos = st.multiselect("Select Algorithms to Compare", 
-                                ["Shortest Path", "Intelligent Routing", "Q-Learning", "Trust-Aware Q-Routing", "DQN (Deep RL)", "GNN-RL (Graph AI)"],
-                                default=["Shortest Path", "Trust-Aware Q-Routing"])
+                                ["OSPF (Link State)", "RIP (Hop Count)", "Intelligent Routing", "Q-Learning", "Trust-Aware Q-Routing", "DQN (Deep RL)", "GNN-RL (Graph AI)"],
+                                default=["OSPF (Link State)", "RIP (Hop Count)", "Trust-Aware Q-Routing"])
     
     col_b1, col_b2 = st.columns(2)
     comp_steps = col_b1.number_input("Comparison Packets", min_value=10, value=100)

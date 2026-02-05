@@ -9,6 +9,7 @@ from trust_model import TrustModel
 from routing import ShortestPathRouting, IntelligentRouting, RLRouting, TrustAwareRLRouting
 from rl_agent import QLearningAgent, TrustQLearningAgent
 from ospf_routing import OSPFRouting
+import networkx as nx
 
 # Disable inner logs for cleaner output
 logging.getLogger("NetworkSim").setLevel(logging.WARNING)
@@ -215,10 +216,9 @@ def main():
     print("=" * 60)
     print("Enhanced Trust-Aware Q-Routing Evaluation")
     print("=" * 60)
-    print(f"Configuration:")
-    print(f"  - Total Packets: 3000")
-    print(f"  - Warmup Period: 40% (first 1200 packets ignored)")
-    print(f"  - Blackhole Nodes: [3, 7, 12]")
+    print("Configuration:")
+    print("  - Total Packets: 3000")
+    print("  - Warmup Period: 40% (first 1200 packets ignored)")
     print(f"  - Trust Initial: 1.0")
     print(f"  - Trust Decay: x0.3 (very aggressive)")
     print(f"  - Trust Recovery: +0.02 (slow)")
@@ -232,24 +232,33 @@ def main():
     dummy_net = NetworkSimulation(simpy.Environment())
     random.seed(42)
     dummy_net.create_topology(num_nodes=20, connectivity=0.3)
+
+    # Choose blackholes once (shared across all algorithms for a fair comparison).
+    try:
+        und = dummy_net.graph.to_undirected()
+        centrality = nx.betweenness_centrality(und, normalized=True)
+        blackhole_nodes = [n for n, _ in sorted(centrality.items(), key=lambda kv: kv[1], reverse=True)[:3]]
+    except Exception:
+        blackhole_nodes = [3, 7, 12]
+    print(f"  - Blackhole Nodes: {blackhole_nodes}")
     
     # 1. RIP (Hop Count)
     print("\n[1/4] Simulating RIP (Hop Count)...")
     from routing import RIPRouting
-    result = run_enhanced_scenario("RIP", RIPRouting, packets=3000)
+    result = run_enhanced_scenario("RIP", RIPRouting, packets=3000, blackhole_nodes=blackhole_nodes)
     results['RIP'] = result
     print(f"  [OK] PDR: {result['pdr']:.2f}%, Latency: {result['latency']:.2f}ms")
     
     # 2. OSPF (Link State)
     print("\n[2/4] Simulating OSPF (Link State)...")
-    result = run_enhanced_scenario("OSPF", OSPFRouting, packets=3000)
+    result = run_enhanced_scenario("OSPF", OSPFRouting, packets=3000, blackhole_nodes=blackhole_nodes)
     results['OSPF'] = result
     print(f"  [OK] PDR: {result['pdr']:.2f}%, Latency: {result['latency']:.2f}ms")
     
     # 3. Standard Q-Learning (No Trust)
     print("\n[3/4] Simulating Q-Learning (No Trust)...")
     agent = QLearningAgent(dummy_net.nodes, alpha=0.6, gamma=0.8, epsilon=0.9)
-    result = run_enhanced_scenario("Q-Learning", RLRouting, agent=agent, packets=3000)
+    result = run_enhanced_scenario("Q-Learning", RLRouting, agent=agent, packets=3000, blackhole_nodes=blackhole_nodes)
     results['Q-Learning'] = result
     print(f"  [OK] PDR: {result['pdr']:.2f}%, Latency: {result['latency']:.2f}ms")
     
@@ -275,7 +284,8 @@ def main():
         TrustAwareRLRouting, 
         agent=trust_agent, 
         trust_model=ta_trust_model, 
-        packets=3000
+        packets=3000,
+        blackhole_nodes=blackhole_nodes
     )
     results['Trust-Aware Q-Learning'] = result
     print(f"  [OK] PDR: {result['pdr']:.2f}%, Latency: {result['latency']:.2f}ms")

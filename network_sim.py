@@ -19,6 +19,12 @@ class NetworkSimulation:
             self.graph.edges[u, v]['weight'] = random.randint(1, 10) # ms latency
             self.graph.edges[u, v]['capacity'] = random.randint(10, 100) # Mbps
         
+        # Default "ground-truth" reliability for nodes (used by simulate_packet).
+        # Algorithms should NOT influence this value; only the trust model should learn it.
+        for n in self.graph.nodes():
+            if 'reliability' not in self.graph.nodes[n]:
+                self.graph.nodes[n]['reliability'] = 0.99
+        
         self.nodes = list(self.graph.nodes())
         logger.info(f"Topology created with {num_nodes} nodes and {len(self.graph.edges())} edges")
 
@@ -73,7 +79,7 @@ class NetworkSimulation:
         logger.info(f"Added edge {u}->{v} (Lat: {latency}, Cap: {capacity})")
         return True
 
-    def simulate_packet(self, path, trust_model, priority=0):
+    def simulate_packet(self, path, trust_model=None, priority=0):
         """
         Simulates a packet traversing a path.
         priority: 0 (Normal/Data), 1 (High/Voice)
@@ -94,22 +100,26 @@ class NetworkSimulation:
                     logger.debug(f"Packet (Low Prio) dropped due to congestion on {u}->{v}")
                     return False
 
-            # ... Rest of logic usually handled by "realistic_simulate_packet" patch
-            # But the base method also needs to be robust if called directly
+            # 2. Ground-truth forwarding behavior (independent of the trust model)
+            # IMPORTANT: Trust is a *belief* used for routing decisions; it must not
+            # influence physical packet drops (otherwise we create a circular feedback loop).
+            reliability = self.graph.nodes[v].get('reliability', 1.0)
+            dropped = random.random() > reliability
+            success = not dropped
 
-            u, v = path[i], path[i+1]
-            
-            # Simple stochastic model for packet loss
-            # Lower trust = higher chance of drop
-            trust = trust_model.get_trust(v)
-            drop_prob = (1 - trust) * 0.5 # Max 50% drop rate for 0 trust
-            
-            if random.random() < drop_prob:
-                logger.info(f"Packet dropped at node {v} (Trust: {trust:.2f})")
-                success = False
-                trust_model.update_trust(v, False) # Penalize
+            # 3. Update trust model with observation + optional metrics
+            if trust_model is not None:
+                bandwidth = self.graph[u][v].get('capacity', None)
+                trust_model.update_trust(
+                    v,
+                    success,
+                    priority=priority,
+                    delay=weight,
+                    bandwidth=bandwidth,
+                )
+
+            if dropped:
+                logger.debug(f"Packet dropped at node {v} (Reliability: {reliability:.2f})")
                 break
-            else:
-                trust_model.update_trust(v, True) # Reward
                 
         return success

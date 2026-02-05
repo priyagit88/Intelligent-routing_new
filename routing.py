@@ -80,11 +80,16 @@ class RLRouting(RoutingAlgorithm):
             
             # Prevent simple loops
             if next_hop in visited:
-                 # In pure RL, loops are discouraged by penalty, but we force break for routing utility
-                 # Or we can allow it if we trust the agent to eventually exit. 
-                 # For simulation speed, we'll avoid immediate loops or re-visiting.
-                 # But standard Q-routing might re-visit. Let's block it for now.
-                 pass
+                 # Avoid loops by choosing an alternate unvisited neighbor if possible.
+                 unvisited = [n for n in neighbors if n not in visited]
+                 if not unvisited:
+                     break
+                 if "avoid_nodes" in self.agent.choose_action.__code__.co_varnames:
+                     next_hop = self.agent.choose_action(current, unvisited, target, avoid_nodes=visited)
+                 else:
+                     next_hop = self.agent.choose_action(current, unvisited, target)
+                 if next_hop is None or next_hop in visited:
+                     break
 
             path.append(next_hop)
             visited.add(next_hop)
@@ -135,6 +140,25 @@ class TrustAwareRLRouting(RLRouting):
         )
         return score
 
+    def _has_path(self, src, dst):
+        """Fast reachability guard for directed graphs."""
+        try:
+            return nx.has_path(self.graph, src, dst)
+        except Exception:
+            return False
+
+    def _progress_score(self, node_id, target):
+        """
+        Heuristic: how close node_id is to target (higher is better).
+        Uses hop distance (unweighted) for speed and robustness.
+        """
+        try:
+            hops = nx.shortest_path_length(self.graph, source=node_id, target=target)
+        except Exception:
+            return 0.0
+        # 1 hop away -> 0.5, 2 hops -> 0.33, etc.
+        return 1.0 / (1.0 + float(hops))
+
     def find_path(self, source, target):
         path = [source]
         current = source
@@ -159,16 +183,32 @@ class TrustAwareRLRouting(RLRouting):
             
             if not trusted_neighbors:
                 break
+
+            # REACHABILITY GATE: avoid dead-ends that cannot reach target.
+            # This is critical for directed/random graphs; otherwise the hop-by-hop
+            # policy can easily get stuck even though a global path exists.
+            reachable_neighbors = [n for n in trusted_neighbors if self._has_path(n, target)]
+            if reachable_neighbors:
+                trusted_neighbors = reachable_neighbors
             
             # Get Trust Scores for trusted neighbors
-            trust_scores = {n: self.trust_model.get_trust(n) for n in trusted_neighbors}
-            
-            # If using multi-metric scoring, enhance trust scores with metrics
-            if self.use_multi_metric:
-                # Calculate multi-metric scores for each neighbor
-                metric_scores = {n: self.calculate_multi_metric_score(n) for n in trusted_neighbors}
-                # Use metric scores as "enhanced trust scores" for agent
-                trust_scores = metric_scores
+            trust_scores = {}
+            for n in trusted_neighbors:
+                base = self.trust_model.get_trust(n)
+                if self.use_multi_metric:
+                    base = self.calculate_multi_metric_score(n)
+
+                # Add a light goal-directed heuristic so the agent doesn't "wander".
+                prog = self._progress_score(n, target)
+                edge_delay = self.graph[current][n].get('weight', 10) if current in self.graph and n in self.graph[current] else 10
+                delay_score = 1.0 / (1.0 + float(edge_delay))
+
+                # If the trust model has already flagged a node as blackhole, heavily down-rank it.
+                is_blackhole = bool(self.trust_model.stats.get(n, {}).get("is_blackhole", False))
+                blackhole_penalty = 0.0 if not is_blackhole else -1.0
+
+                # Blend: trust/metrics dominate, but we still prefer neighbors that can reach target cheaply.
+                trust_scores[n] = (0.60 * base) + (0.30 * prog) + (0.10 * delay_score) + blackhole_penalty
             
             # Pass trust_scores to the TrustQLearningAgent
             if "trust_scores" in self.agent.choose_action.__code__.co_varnames:

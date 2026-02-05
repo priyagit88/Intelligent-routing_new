@@ -30,9 +30,9 @@ def reset_network(num_nodes=15, connectivity=0.2, random_init=True):
     if random_init:
         st.session_state.net_sim.create_topology(num_nodes=num_nodes, connectivity=connectivity)
         # Pre-seed some bad nodes for demo purposes if default
-        if num_nodes == 15 and connectivity == 0.2:
-            if 3 in st.session_state.net_sim.graph.nodes: st.session_state.net_sim.graph.nodes[3]['reliability'] = 0.5
-            if 7 in st.session_state.net_sim.graph.nodes: st.session_state.net_sim.graph.nodes[7]['reliability'] = 0.6
+        # REMOVED hidden bad nodes (3 and 7) to avoid confusion. 
+        # Only User-configured adversaries should be bad.
+        pass
     else:
         # Start completely empty or as requested
         for _ in range(num_nodes):
@@ -120,6 +120,64 @@ with st.sidebar.expander("Initialize Topology", expanded=False):
         if st.button("Generate Custom Network"):
             reset_network(num_nodes=c_nodes, connectivity=c_conn, random_init=True)
             st.rerun()
+
+    # New Demo Mode for Viva
+    st.write("---")
+    st.write("**Demo Scenarios**")
+    if st.button("Generate Trust-Aware Demo Topology"):
+        # 1. Generate Random Topology (with good connectivity for paths)
+        reset_network(num_nodes=15, connectivity=0.3, random_init=True)
+        ns = st.session_state.net_sim
+        g = ns.graph
+        nodes = list(g.nodes)
+        
+        # 2. Find a "Vulnerable Shortest Path" Scenario dynamically
+        # We look for (Source, Dest) and a specific Node on the Shortest Path
+        # such that if that node is malicious, RIP/OSPF (Shortest Path) fails, but an Alternate Path exists.
+        
+        scenario_found = False
+        attempts = 0
+        
+        # Try to find a scenario
+        while not scenario_found and attempts < 100:
+            attempts += 1
+            s, t = random.sample(nodes, 2)
+            
+            try:
+                # 1. Get Shortest Path (Candidate for compromised path)
+                sp = nx.shortest_path(g, s, t)
+                if len(sp) < 3: continue # Too short, no middle node to compromise
+                
+                # 2. Pick a victim node (not start or end)
+                victim = sp[random.randint(1, len(sp)-2)]
+                
+                # 3. Check if Alternate Path exists strictly avoiding victim
+                g_temp = g.copy()
+                g_temp.remove_node(victim)
+                if nx.has_path(g_temp, s, t):
+                    # Found it!
+                    scenario_found = True
+                    
+                    # 4. Apply Adversary Configuration
+                    g.nodes[victim]['reliability'] = 0.0 # Physical Blackhole
+                    st.session_state.adversaries[victim] = Adversary(victim, "blackhole")
+                    
+                    # 5. Pre-seed Trust Model
+                    # Drop trust to 0.0 so Trust-Aware routing detects it immediately
+                    st.session_state.trust_model.node_trust[victim] = 0.0
+                    
+                    # 6. Set Demo defaults for Path Comparison tab
+                    st.session_state['demo_src'] = s
+                    st.session_state['demo_dst'] = t
+                    
+                    st.success(f"Generated Dynamic Topology with Trust Scenario! (Node {victim} is malicious). Go to 'Path Comparison' tab to see it live.")
+            except nx.NetworkXNoPath:
+                continue
+        
+        if not scenario_found:
+            st.warning("Generated topology but couldn't find a perfect multi-path scenario automatically. Try again.")
+        
+        st.rerun()
 
 st.sidebar.write("---")
 
@@ -262,6 +320,14 @@ with st.sidebar.expander("🛡️ Adversary Settings"):
     if nodes:
         st.write("Configure malicious nodes in the network.")
         target_adv_node = st.selectbox("Select Node for Adversary", nodes, key="adv_node_sel")
+        
+        # Suggest valid targets for Blackhole (high centrality nodes)
+        if nodes:
+            centrality = nx.betweenness_centrality(st.session_state.net_sim.graph)
+            # Top 3 nodes
+            top_nodes = sorted(centrality, key=centrality.get, reverse=True)[:3]
+            st.caption(f"💡 Recommended Blackholes (High Traffic): {', '.join(map(str, top_nodes))}")
+
         attack_type = st.selectbox("Attack Type", ["None", "blackhole", "grayhole", "on-off"])
         
         if st.button("Apply Attack Configuration") and target_adv_node is not None:
@@ -275,7 +341,12 @@ with st.sidebar.expander("🛡️ Adversary Settings"):
                 if attack_type == "on-off":
                     st.session_state.env.process(adv.update_behavior(st.session_state.env))
                 st.session_state.adversaries[target_adv_node] = adv
-                st.success(f"Node {target_adv_node} is now a {attack_type}!")
+                # Instant Trust Penalty for Demo/Visualization instantly
+                # This simulates "Intelligence" or allows the algo to react immediately 
+                # without needing a simulation burn-in period.
+                if hasattr(st.session_state, 'trust_model'):
+                    st.session_state.trust_model.node_trust[target_adv_node] = 0.0
+                st.success(f"Node {target_adv_node} is now a {attack_type}! (Trust Score reset to 0.0)")
     else:
         st.info("No nodes available to configure as adversaries.")
 
@@ -521,7 +592,7 @@ elif run_mode:
 col1, col2 = st.columns([2, 1])
 
 # Main Interface Tabs
-tab1, tab2 = st.tabs(["🔴 Live Simulation", "📊 Benchmark Comparison"])
+tab1, tab2, tab3 = st.tabs(["🔴 Live Simulation", "📊 Benchmark Comparison", "🔍 Path Comparison & Explanation"])
 
 with tab1:
     # Visualize Controls
@@ -558,8 +629,149 @@ with tab1:
     # Trust Table
     if nodes:
         st.subheader("Node Trust Scores")
-        trust_data = {n: st.session_state.trust_model.get_trust(n) for n in nodes}
-        st.bar_chart(trust_data)
+        # Fix: Trust model might not be initialized if network is empty
+        if hasattr(st.session_state, 'trust_model'):
+            trust_data = {n: st.session_state.trust_model.get_trust(n) for n in nodes}
+            st.bar_chart(trust_data)
+        else:
+            st.info("Trust model not available.")
+
+# Path Comparison Tab
+with tab3:
+    st.subheader("🔍 Path Analysis & Protocol Comparison")
+    st.markdown("""
+    Select a Source and Destination to visualize and compare the exact paths chosen by different protocols.
+    Observe how **RIP** and **OSPF** might walk into traps, while **Trust-Aware Routing** avoids them.
+    """)
+    
+    if len(nodes) < 2:
+        st.warning("Please add at least 2 nodes to the network.")
+    else:
+        pc_col1, pc_col2 = st.columns(2)
+        
+        # Determine defaults
+        def_src_idx = 0
+        def_dst_idx = 1 if len(nodes) > 1 else 0
+        
+        # Use demo defaults if available and valid
+        if 'demo_src' in st.session_state and st.session_state['demo_src'] in nodes:
+             try:
+                 def_src_idx = nodes.index(st.session_state['demo_src'])
+             except: pass
+        if 'demo_dst' in st.session_state and st.session_state['demo_dst'] in nodes:
+             try:
+                 def_dst_idx = nodes.index(st.session_state['demo_dst'])
+             except: pass
+
+        with pc_col1:
+            pc_src = st.selectbox("Source Node", nodes, key="pc_src", index=def_src_idx)
+        with pc_col2:
+            pc_dst = st.selectbox("Destination Node", nodes, key="pc_dst", index=def_dst_idx)
+            
+        if pc_src == pc_dst:
+            st.error("Source and Destination must be different.")
+        else:
+            # Calculate Paths
+            # 1. RIP (Hop Count) implies BFS or shortest path with weight=None
+            try:
+                path_rip = nx.shortest_path(st.session_state.net_sim.graph, pc_src, pc_dst, weight=None)
+            except nx.NetworkXNoPath:
+                path_rip = None
+                
+            # 2. OSPF (Shortest Path logic using 'weight')
+            try:
+                path_ospf = nx.shortest_path(st.session_state.net_sim.graph, pc_src, pc_dst, weight='weight')
+            except nx.NetworkXNoPath:
+                path_ospf = None
+                
+            # 3. Trust-Aware (IntelligentRouting class)
+            # We instantiate a temporary routing object to use its logic (which includes trust penalties)
+            # Note: We use the CURRENT trust model state.
+            temp_trust_routing = IntelligentRouting(st.session_state.net_sim.graph, st.session_state.trust_model)
+            path_trust = temp_trust_routing.find_path(pc_src, pc_dst)
+            
+            # Identify malicious nodes on paths for annotation
+            malicious_nodes_on_path = set()
+            
+            # Check RIP Path
+            rip_dropped = False
+            if path_rip:
+                for node in path_rip[1:]: # Skip source
+                    rel = st.session_state.net_sim.graph.nodes[node].get('reliability', 1.0)
+                    if rel < 0.8: # Threshold for malicious/bad
+                        malicious_nodes_on_path.add(node)
+                        rip_dropped = True
+            
+            # Check OSPF Path
+            ospf_dropped = False
+            if path_ospf:
+                 for node in path_ospf[1:]:
+                    rel = st.session_state.net_sim.graph.nodes[node].get('reliability', 1.0)
+                    if rel < 0.8:
+                        malicious_nodes_on_path.add(node)
+                        ospf_dropped = True
+
+            # Prepare Data for Visualization
+            paths_to_draw = {
+                'RIP': path_rip if path_rip else [],
+                'OSPF': path_ospf if path_ospf else [],
+                'Trust-Aware': path_trust if path_trust else []
+            }
+            
+            # Display Legend/Explanation Text
+            st.write("---")
+            exp_col1, exp_col2, exp_col3 = st.columns(3)
+            
+            with exp_col1:
+                st.markdown(f"**🔵 RIP (Hop Count)**")
+                if path_rip:
+                    st.write(f"Path: {path_rip}")
+                    st.write(f"Hops: {len(path_rip)-1}")
+                    if rip_dropped:
+                        st.error("❌ Vulnerable! Passes through malicious node.")
+                else:
+                    st.warning("No Path Found")
+
+            with exp_col2:
+                st.markdown(f"**🟣 OSPF (Cost/Latency)**")
+                if path_ospf:
+                    st.write(f"Path: {path_ospf}")
+                    # Calc Cost
+                    cost = sum(st.session_state.net_sim.graph[u][v].get('weight', 1) for u, v in zip(path_ospf[:-1], path_ospf[1:]))
+                    st.write(f"Cost: {cost}")
+                    if ospf_dropped:
+                        st.error("❌ Vulnerable! Passes through malicious node.")
+                else:
+                    st.warning("No Path Found")
+
+            with exp_col3:
+                st.markdown(f"**🟢 Trust-Aware**")
+                if path_trust:
+                    st.write(f"Path: {path_trust}")
+                    # Check if trust path hits malicious node (it shouldn't generally)
+                    trust_dropped = False
+                    for node in path_trust[1:]:
+                        rel = st.session_state.net_sim.graph.nodes[node].get('reliability', 1.0)
+                        if rel < 0.8:
+                            trust_dropped = True
+                    if trust_dropped:
+                        st.warning("⚠️ Warning: Path includes low-reliability node (Trust model might not have converged yet).")
+                    else:
+                        st.success("✅ Secure Path")
+                else:
+                    st.warning("No Path Found")
+
+            st.write("---")
+            
+            # Visualize
+            fig_compare = visualize_network(
+                st.session_state.net_sim.graph,
+                trust_model=st.session_state.trust_model,
+                return_fig=True,
+                paths=paths_to_draw,
+                show_drops=list(malicious_nodes_on_path)
+            )
+            st.pyplot(fig_compare)
 
 # Security Analysis Tab
 with st.tabs(["🛡️ Security Analysis"])[0]:

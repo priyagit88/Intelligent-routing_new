@@ -28,6 +28,8 @@ class TrustModel:
         """Initialize a node with default trust and statistics."""
         if node_id not in self.node_trust:
             self.node_trust[node_id] = self.initial_trust
+            
+        if node_id not in self.stats:
             self.stats[node_id] = {
                 "data_success": 0, "data_fail": 0, 
                 "voice_success": 0, "voice_fail": 0,
@@ -39,8 +41,9 @@ class TrustModel:
                 "consecutive_failures": 0,  # Track consecutive failures
                 "is_blackhole": False  # Blackhole detection flag
             }
-            if neighbors:
-                self.neighbors[node_id] = neighbors
+            
+        if neighbors:
+            self.neighbors[node_id] = neighbors
 
     def update_trust(self, node_id, success, **kwargs):
         """
@@ -57,7 +60,7 @@ class TrustModel:
         delay = kwargs.get('delay', None)
         bandwidth = kwargs.get('bandwidth', None)
         
-        if node_id not in self.node_trust:
+        if node_id not in self.node_trust or node_id not in self.stats:
             self.initialize_node(node_id)
         
         # Update Stats

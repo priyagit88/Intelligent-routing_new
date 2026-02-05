@@ -39,8 +39,14 @@ def run_enhanced_scenario(algo_name, routing_class, agent=None, trust_model=None
     net_sim.create_topology(num_nodes=20, connectivity=0.3)
     
     # Set Blackhole Nodes
+    # If not provided, pick high-centrality nodes so the attack meaningfully impacts shortest-path protocols.
     if blackhole_nodes is None:
-        blackhole_nodes = [3, 7, 12]  # Default blackhole nodes
+        try:
+            und = net_sim.graph.to_undirected()
+            centrality = nx.betweenness_centrality(und, normalized=True)
+            blackhole_nodes = [n for n, _ in sorted(centrality.items(), key=lambda kv: kv[1], reverse=True)[:3]]
+        except Exception:
+            blackhole_nodes = [3, 7, 12]  # Fallback
     
     for n in net_sim.nodes: 
         net_sim.graph.nodes[n]['reliability'] = 0.99
@@ -49,12 +55,15 @@ def run_enhanced_scenario(algo_name, routing_class, agent=None, trust_model=None
             net_sim.graph.nodes[n]['reliability'] = 0.1  # 90% drop rate (blackhole)
 
     # Patch simulation with enhanced metrics tracking
+    # Return: (success, total_delay, fail_hop_index)
+    # fail_hop_index is the hop index i where u=path[i], v=path[i+1] failed; None if success.
     def realistic_simulate_packet(path, trust_model=None):
         if not path: 
-            return False, 0
+            return False, 0, None
         
         success = True
         total_delay = 0
+        fail_hop_index = None
         
         for i in range(len(path) - 1):
             u, v = path[i], path[i+1]
@@ -72,12 +81,13 @@ def run_enhanced_scenario(algo_name, routing_class, agent=None, trust_model=None
                 success = False
                 if trust_model: 
                     trust_model.update_trust(v, False, delay=delay, bandwidth=bandwidth)
+                fail_hop_index = i
                 break
             else:
                 if trust_model: 
                     trust_model.update_trust(v, True, delay=delay, bandwidth=bandwidth)
         
-        return success, total_delay
+        return success, total_delay, fail_hop_index
     
     net_sim.simulate_packet = realistic_simulate_packet
 
@@ -120,12 +130,38 @@ def run_enhanced_scenario(algo_name, routing_class, agent=None, trust_model=None
         for i in range(packets):
             src, dst = random.choice(flows)
             
+            # End of warmup: switch RL policies to exploit for fair PDR measurement.
+            if i == stats['warmup_packets'] and agent is not None and hasattr(agent, "epsilon"):
+                agent.epsilon = 0.0
+
             # Find path
             path = routing_algo.find_path(src, dst)
             
             if path:
                 # Simulate packet
-                success, path_latency = net_sim.simulate_packet(path, trust_model)
+                success, path_latency, fail_hop_index = net_sim.simulate_packet(path, trust_model)
+                
+                # Online learning for RL agents (both trust-aware and vanilla)
+                if agent is not None and hasattr(agent, "learn") and len(path) > 1:
+                    for hop_i in range(len(path) - 1):
+                        u, v = path[hop_i], path[hop_i + 1]
+                        nxt_nbrs = list(net_sim.graph.neighbors(v)) if v in net_sim.graph else []
+                        
+                        hop_delay = net_sim.graph[u][v].get('weight', 10)
+                        
+                        # Reward shaping:
+                        # - Encourage progress/successful hops
+                        # - Penalize failures strongly
+                        # - Small penalty for delay to avoid very long/slow paths
+                        hop_success = success and (fail_hop_index is None or hop_i < fail_hop_index)
+                        done = (v == dst) or (fail_hop_index == hop_i)
+                        reward = (1.0 if hop_success else -25.0) - (0.05 * float(hop_delay))
+                        if done and hop_success and v == dst:
+                            reward += 10.0
+                        
+                        agent.learn(u, v, reward, v, nxt_nbrs, target_node=dst, done=done)
+                        if done:
+                            break
                 
                 # Only count stats after warmup period
                 if i >= stats['warmup_packets']:
@@ -155,8 +191,8 @@ def run_enhanced_scenario(algo_name, routing_class, agent=None, trust_model=None
                                 if trust_variance < 0.01:  # Trust has converged
                                     stats['trust_convergence_time'] = i
             
-            # Decay epsilon for RL agents
-            if agent and i % 100 == 0:
+            # Decay epsilon for RL agents (warmup only; evaluation uses exploitation)
+            if agent and i < stats['warmup_packets'] and i % 100 == 0:
                 agent.decay_epsilon()
             
             yield env.timeout(0.1)

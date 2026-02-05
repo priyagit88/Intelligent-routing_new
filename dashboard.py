@@ -23,12 +23,15 @@ except (ImportError, OSError) as e:
     GNNRLAgent = None
 
 # Helper to reset simulation state
-def reset_network(num_nodes=15, connectivity=0.2, random_init=True):
+def reset_network(num_nodes=15, connectivity=0.2, random_init=True, topology_type="random", rows=3, cols=3):
     st.session_state.env = simpy.Environment()
     st.session_state.net_sim = NetworkSimulation(st.session_state.env)
     
     if random_init:
-        st.session_state.net_sim.create_topology(num_nodes=num_nodes, connectivity=connectivity)
+        if topology_type == "mesh":
+            st.session_state.net_sim.create_mesh_topology(rows=rows, cols=cols)
+        else:
+            st.session_state.net_sim.create_topology(num_nodes=num_nodes, connectivity=connectivity)
         # Pre-seed some bad nodes for demo purposes if default
         # REMOVED hidden bad nodes (3 and 7) to avoid confusion. 
         # Only User-configured adversaries should be bad.
@@ -102,7 +105,7 @@ st.sidebar.header("🛠️ Network Setup")
 # Initialization Section
 with st.sidebar.expander("Initialize Topology", expanded=False):
     st.write("Reset the simulation with custom parameters.")
-    init_mode = st.radio("Creation Mode", ["Random (Preset)", "Empty (Manual)", "Random (Custom)"])
+    init_mode = st.radio("Creation Mode", ["Random (Preset)", "Empty (Manual)", "Random (Custom)", "Mesh (Grid)"])
     
     if init_mode == "Random (Preset)":
         if st.button("Generate Default (15 nodes)"):
@@ -119,6 +122,15 @@ with st.sidebar.expander("Initialize Topology", expanded=False):
         c_conn = st.slider("Connectivity Probability", 0.05, 0.5, 0.2)
         if st.button("Generate Custom Network"):
             reset_network(num_nodes=c_nodes, connectivity=c_conn, random_init=True)
+            st.rerun()
+
+    elif init_mode == "Mesh (Grid)":
+        st.write("Generate a regular Grid/Mesh topology.")
+        c_rows = st.number_input("Rows", 2, 10, 3)
+        c_cols = st.number_input("Columns", 2, 10, 3)
+        st.caption(f"Total Nodes: {c_rows * c_cols}")
+        if st.button("Generate Mesh Network"):
+            reset_network(random_init=True, topology_type="mesh", rows=c_rows, cols=c_cols)
             st.rerun()
 
     # New Demo Mode for Viva
@@ -187,7 +199,7 @@ st.sidebar.header("Simulation Controls")
 # Algorithm Selection
 algo_option = st.sidebar.selectbox(
     "Routing Protocol", 
-    ["Standard OSPF (Latency)", "RIP (Hop Count)", "Intelligent (Trust)", "Q-Learning (AI)", "Trust-Aware Q-Routing (New)", "DQN (Deep RL)", "GNN-RL (Graph AI)"]
+    ["Standard OSPF (Latency)", "RIP (Hop Count)", "Trust-Aware Q-Routing (New)"]
 )
 
 # Handle Algorithm Change
@@ -414,9 +426,7 @@ def get_traffic_pair(index, nodes, graph):
 
 # Simulation Step
 st.sidebar.subheader("Run Simulation")
-cols = st.sidebar.columns(2)
-train_mode = cols[0].button("🚀 Train Agent")
-run_mode = cols[1].button("▶️ Run Step")
+run_mode = st.sidebar.button("▶️ Run Step")
 steps = st.sidebar.number_input("Packets", min_value=1, value=50)
 
 if st.sidebar.button("🔄 Regenerate Traffic"):
@@ -586,26 +596,25 @@ def run_simulation_batch(num_packets, training=False):
         # Optionally restore epsilon to low value for testing instead of lowest 
         # But usually we keep it low.
 
-if train_mode:
-    run_simulation_batch(steps, training=True)
-elif run_mode:
+if run_mode:
     run_simulation_batch(steps, training=False)
 
 # Layout
 col1, col2 = st.columns([2, 1])
 
 # Main Interface Tabs
-tab1, tab2, tab3 = st.tabs(["🔴 Live Simulation", "📊 Benchmark Comparison", "🔍 Path Comparison & Explanation"])
+# Main Interface Tabs
+tab1, tab2 = st.tabs(["🔴 Live Simulation", "📊 Benchmark Comparison"])
 
 with tab1:
     # Visualize Controls
-    view_mode = st.radio("Visualization Mode", ["Ground Truth (Reliability)", "Agent Perception (Trust Score)"])
+    view_mode = "Ground Truth (Reliability)"
 
     with col1:
         st.subheader(f"Network Topology ({view_mode})")
         
         # If Ground Truth, pass trust_model=None so it uses 'reliability' attribute
-        tm_to_use = st.session_state.trust_model if view_mode == "Agent Perception (Trust Score)" else None
+        tm_to_use = None
         
         # Visualize
         if len(st.session_state.net_sim.graph.nodes) > 0:
@@ -640,7 +649,9 @@ with tab1:
             st.info("Trust model not available.")
 
 # Path Comparison Tab
-with tab3:
+# Path Comparison Section (Moved to Main Page)
+with tab1:
+    st.write("---")
     st.subheader("🔍 Path Analysis & Protocol Comparison")
     st.markdown("""
     Select a Source and Destination to visualize and compare the exact paths chosen by different protocols.

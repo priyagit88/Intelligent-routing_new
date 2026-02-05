@@ -28,6 +28,31 @@ class NetworkSimulation:
         self.nodes = list(self.graph.nodes())
         logger.info(f"Topology created with {num_nodes} nodes and {len(self.graph.edges())} edges")
 
+    def create_mesh_topology(self, rows=3, cols=3):
+        """Generates a Grid/Mesh topology"""
+        # Create grid graph (undirected by default)
+        grid = nx.grid_2d_graph(rows, cols)
+        
+        # Convert to directed graph
+        self.graph = nx.DiGraph(grid)
+        self.graph = self.graph.to_directed()
+        
+        # Relabel nodes from (row, col) to integers 0, 1, 2...
+        mapping = {node: i for i, node in enumerate(grid.nodes())}
+        self.graph = nx.relabel_nodes(self.graph, mapping)
+        
+        # Add weights/capacities
+        for (u, v) in self.graph.edges():
+            self.graph.edges[u, v]['weight'] = random.randint(1, 10)
+            self.graph.edges[u, v]['capacity'] = random.randint(10, 100)
+            
+        # Initialize reliability
+        for n in self.graph.nodes():
+            self.graph.nodes[n]['reliability'] = 0.99
+            
+        self.nodes = list(self.graph.nodes())
+        logger.info(f"Mesh Topology created: {rows}x{cols} ({len(self.nodes)} nodes)")
+
     def degrade_node(self, node_id, duration=50):
         """Simulates a node having performance issues or being compromised"""
         logger.warning(f"Node {node_id} is degrading...")
